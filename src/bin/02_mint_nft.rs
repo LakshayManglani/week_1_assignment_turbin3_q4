@@ -26,7 +26,7 @@ fn main() -> Result<()> {
             .asset(asset.pubkey())
             .payer(payer.pubkey())
             .name("My Asset".into())
-            .uri("https://example.com/my-asset.json".into())
+            .uri("https://4r3jajvbhenppwwxyuxtagvbz5vkke43ucecsbekp3emjnrefloa.devnet-1.datasprite-cdn.com/GNpp9YzTvKm3QyRzkMBZt3KVNmhPrJTdCJvucn2LCWRH/".into())
             .instruction()],
         Some(&payer.pubkey()),
         &[&asset, &payer],
