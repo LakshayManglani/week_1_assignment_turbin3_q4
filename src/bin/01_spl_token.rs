@@ -12,7 +12,7 @@ use spl_associated_token_account::{
 };
 use spl_token_interface::{
     id as token_program_id,
-    instruction::{initialize_mint, mint_to_checked},
+    instruction::{initialize_mint, mint_to_checked, transfer_checked},
     state::{Account, Mint},
 };
 
@@ -108,13 +108,76 @@ fn main() -> Result<()> {
     let mint_data = Mint::unpack(&mint_account.data)?;
     let sender_token_account = client.get_account(&sender_account_address)?;
     let sender_token_data = Account::unpack(&sender_token_account.data)?;
-    println!("\n Mint Mined");
+    println!("\nMint Tokens");
     println!(
-        "\nTransaction Signature: {}",
+        "Transaction Signature: {}",
         transaction_signature_mint_token
     );
     println!("Mint Account: {:#?}", mint_data);
     println!("Sender Account: {:#?}", sender_token_data);
+
+    // create recipient ata
+    let recipient = Keypair::new();
+
+    let transaction_create_recipient_ata = Transaction::new_signed_with_payer(
+        &[create_associated_token_account(
+            &payer.pubkey(),
+            &recipient.pubkey(),
+            &mint.pubkey(),
+            &token_program_id(),
+        )],
+        Some(&payer.pubkey()),
+        &[&payer],
+        latest_blockhash,
+    );
+    let transaction_signature_recipient_ata =
+        client.send_and_confirm_transaction(&transaction_create_recipient_ata)?;
+
+    let recipient_address = get_associated_token_address(&recipient.pubkey(), &mint.pubkey());
+    let recipient_account = client.get_account(&recipient_address)?;
+    let recipient_data = Account::unpack(&recipient_account.data)?;
+
+    println!(
+        "\nTransaction Signature: {}",
+        transaction_signature_recipient_ata
+    );
+    println!("Recipient Address: {}", recipient_address);
+    println!("Recipient Account: {:#?}", recipient_data);
+
+    // Transfer Tokens
+    let transfer_amount = 25;
+    let transaction_transfer_amount = Transaction::new_signed_with_payer(
+        &[transfer_checked(
+            &token_program_id(),
+            &sender_account_address,
+            &mint.pubkey(),
+            &recipient_address,
+            &payer.pubkey(),
+            &[],
+            transfer_amount,
+            decimals,
+        )?],
+        Some(&payer.pubkey()),
+        &[&payer],
+        latest_blockhash,
+    );
+
+    let transaction_signature_transfer_amount =
+        client.send_and_confirm_transaction(&transaction_transfer_amount)?;
+
+    let sender_token_account = client.get_account(&sender_account_address)?;
+    let sender_token_data = Account::unpack(&sender_token_account.data)?;
+
+    let recipient_account = client.get_account(&recipient_address)?;
+    let recipient_data = Account::unpack(&recipient_account.data)?;
+
+    println!("\nTransfer Tokens");
+    println!(
+        "Transaction Signature: {}",
+        transaction_signature_transfer_amount
+    );
+    print!("Sender Account: {:#?}", sender_token_data);
+    print!("Recipient Account: {:#?}", recipient_data);
 
     Ok(())
 }
