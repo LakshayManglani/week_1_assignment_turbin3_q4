@@ -1,5 +1,5 @@
 use anyhow::Result;
-use mpl_core::{accounts::BaseAssetV1, instructions::CreateV1Builder};
+use mpl_core::instructions::CreateV1Builder;
 use solana_client::{rpc_client::RpcClient, rpc_config::CommitmentConfig};
 use solana_sdk::{
     signature::{Keypair, read_keypair_file},
@@ -21,7 +21,7 @@ fn main() -> Result<()> {
     // setup asset
     let asset = Keypair::new();
 
-    let transaction_mint_asset = Transaction::new_signed_with_payer(
+    let transaction = Transaction::new_signed_with_payer(
         &[CreateV1Builder::new()
             .asset(asset.pubkey())
             .payer(payer.pubkey())
@@ -33,17 +33,13 @@ fn main() -> Result<()> {
         latest_blockhash,
     );
 
-    let transaction_signature_mint_asset =
-        client.send_and_confirm_transaction(&transaction_mint_asset)?;
-    let asset_account = client.get_account(&asset.pubkey())?;
-    let asset_data = BaseAssetV1::from_bytes(&asset_account.data)?;
+    let signature = client.send_and_confirm_transaction(&transaction)?;
 
     println!(
-        "\nTransaction Signature: {}",
-        transaction_signature_mint_asset
+        "\nMint NFT\n\tAddress: {}\n\tSig: {}",
+        asset.pubkey(),
+        signature
     );
-    println!("Asset Address: {}", asset.pubkey());
-    println!("Asset Account: {:#?}", asset_data);
 
     Ok(())
 }

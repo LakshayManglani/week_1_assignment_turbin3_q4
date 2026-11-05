@@ -1,8 +1,10 @@
 use anyhow::Result;
 use solana_client::{rpc_client::RpcClient, rpc_config::CommitmentConfig};
 use solana_sdk::{
+    hash::Hash,
     program_pack::Pack,
-    signature::{Keypair, read_keypair_file},
+    pubkey::Pubkey,
+    signature::{Keypair, Signature, read_keypair_file},
     signer::Signer,
     transaction::Transaction,
 };
@@ -13,7 +15,7 @@ use spl_associated_token_account::{
 use spl_token_interface::{
     id as token_program_id,
     instruction::{initialize_mint, mint_to_checked, transfer_checked},
-    state::{Account, Mint},
+    state::Mint,
 };
 
 fn main() -> Result<()> {
@@ -26,13 +28,90 @@ fn main() -> Result<()> {
         read_keypair_file("id.json").expect("Failed to find file id.json in the root directory!");
 
     // setup mint
-    let mint = Keypair::new();
-    let mint_rent = client.get_minimum_balance_for_rent_exemption(Mint::LEN)?;
     let decimals: u8 = 6;
 
     let latest_blockhash = client.get_latest_blockhash()?;
 
-    let transaction_create_and_init_mint_account = Transaction::new_signed_with_payer(
+    // Create Mint
+    let (mint, signature_mint) = create_token_mint(&client, &payer, decimals, latest_blockhash)?;
+    println!(
+        "\nMint Created\n\tAddress: {}\n\tSig: {}",
+        mint.pubkey(),
+        signature_mint
+    );
+
+    // Create sender ATA
+    let (sender_address, signature_sender) = create_ata(
+        &client,
+        &payer,
+        &payer.pubkey(),
+        &mint.pubkey(),
+        latest_blockhash,
+    )?;
+    println!(
+        "\nSender ATA Created\n\tAddress: {}\n\tSig: {}",
+        sender_address, signature_sender
+    );
+
+    // Mint tokens to Sender
+    let signature_mint_tokens = mint_tokens_to_ata(
+        &client,
+        &payer,
+        &mint.pubkey(),
+        &sender_address,
+        latest_blockhash,
+        100,
+        decimals,
+    )?;
+    println!(
+        "\nMinted 100 Tokens\n\tAddress: {}\n\tSig: {}",
+        sender_address, signature_mint_tokens
+    );
+
+    // create recipient ata
+    let recipient = Keypair::new();
+    let (recipient_address, signature_recipient) = create_ata(
+        &client,
+        &payer,
+        &recipient.pubkey(),
+        &mint.pubkey(),
+        latest_blockhash,
+    )?;
+    println!(
+        "\nRecipient ATA Created\n\tAddress: {}\n\tSig: {}",
+        recipient_address, signature_recipient
+    );
+
+    // Transfer Tokens
+    let signature_transfer = transfer_tokens_between_ata(
+        &client,
+        &payer,
+        &sender_address,
+        &mint.pubkey(),
+        &recipient_address,
+        latest_blockhash,
+        25,
+        decimals,
+    )?;
+    println!("\nTransfered 25 tokens\n\tSig: {}", signature_transfer);
+    println!(
+        "\tFrom ATA: {} --------> To ATA: {}",
+        sender_address, recipient_address
+    );
+
+    Ok(())
+}
+
+fn create_token_mint(
+    client: &RpcClient,
+    payer: &Keypair,
+    decimals: u8,
+    latest_blockhash: Hash,
+) -> Result<(Keypair, Signature)> {
+    let mint = Keypair::new();
+    let mint_rent = client.get_minimum_balance_for_rent_exemption(Mint::LEN)?;
+
+    let transaction = Transaction::new_signed_with_payer(
         &[
             create_account(
                 &payer.pubkey(),
@@ -50,111 +129,87 @@ fn main() -> Result<()> {
             )?,
         ],
         Some(&payer.pubkey()),
-        &[&payer, &mint],
+        &[payer, &mint],
         latest_blockhash,
     );
-    let transaction_signature_mint =
-        client.send_and_confirm_transaction(&transaction_create_and_init_mint_account)?;
+    let signature = client.send_and_confirm_transaction(&transaction)?;
 
-    let mint_account = client.get_account(&mint.pubkey())?;
-    let mint_data = Mint::unpack(&mint_account.data)?;
+    Ok((mint, signature))
+}
 
-    println!("\nTransaction Signature: {}", transaction_signature_mint);
-    println!("Mint Address: {}", mint.pubkey());
-    println!("Mint Account: {:#?}", mint_data);
-
-    // setup sender ATA
-    let transaction_create_sender_ata = Transaction::new_signed_with_payer(
+fn create_ata(
+    client: &RpcClient,
+    payer: &Keypair,
+    wallet: &Pubkey,
+    mint: &Pubkey,
+    latest_blockhash: Hash,
+) -> Result<(Pubkey, Signature)> {
+    let transaction = Transaction::new_signed_with_payer(
         &[create_associated_token_account(
             &payer.pubkey(),
-            &payer.pubkey(),
-            &mint.pubkey(),
+            wallet,
+            mint,
             &token_program_id(),
         )],
         Some(&payer.pubkey()),
         &[&payer],
         latest_blockhash,
     );
-    let transaction_signature_sender =
-        client.send_and_confirm_transaction(&transaction_create_sender_ata)?;
-    let sender_account_address = get_associated_token_address(&payer.pubkey(), &mint.pubkey());
-    let sender_token_account = client.get_account(&sender_account_address)?;
-    let sender_token_data = Account::unpack(&sender_token_account.data)?;
 
-    println!("\nTransaction Signature: {}", transaction_signature_sender);
-    println!("Sender Address: {}", sender_account_address);
-    println!("Sender Account: {:#?}", sender_token_data);
+    let signature = client.send_and_confirm_transaction(&transaction)?;
+    let address = get_associated_token_address(&payer.pubkey(), mint);
 
-    // Mint tokens
-    let mint_amount = 100;
+    Ok((address, signature))
+}
 
-    let transaction_mint_token = Transaction::new_signed_with_payer(
+fn mint_tokens_to_ata(
+    client: &RpcClient,
+    payer: &Keypair,
+    mint: &Pubkey,
+    destination_ata: &Pubkey,
+    latest_blockhash: Hash,
+    amount: u64,
+    decimals: u8,
+) -> Result<Signature> {
+    let transaction = Transaction::new_signed_with_payer(
         &[mint_to_checked(
             &token_program_id(),
-            &mint.pubkey(),
-            &sender_account_address,
+            mint,
+            destination_ata,
             &payer.pubkey(),
             &[],
-            mint_amount,
+            amount,
             decimals,
         )?],
         Some(&payer.pubkey()),
         &[&payer],
         latest_blockhash,
     );
-    let transaction_signature_mint_token =
-        client.send_and_confirm_transaction(&transaction_mint_token)?;
-    let mint_account = client.get_account(&mint.pubkey())?;
-    let mint_data = Mint::unpack(&mint_account.data)?;
-    let sender_token_account = client.get_account(&sender_account_address)?;
-    let sender_token_data = Account::unpack(&sender_token_account.data)?;
-    println!("\nMint Tokens");
-    println!(
-        "Transaction Signature: {}",
-        transaction_signature_mint_token
-    );
-    println!("Mint Account: {:#?}", mint_data);
-    println!("Sender Account: {:#?}", sender_token_data);
 
-    // create recipient ata
-    let recipient = Keypair::new();
+    let signature = client.send_and_confirm_transaction(&transaction)?;
 
-    let transaction_create_recipient_ata = Transaction::new_signed_with_payer(
-        &[create_associated_token_account(
-            &payer.pubkey(),
-            &recipient.pubkey(),
-            &mint.pubkey(),
-            &token_program_id(),
-        )],
-        Some(&payer.pubkey()),
-        &[&payer],
-        latest_blockhash,
-    );
-    let transaction_signature_recipient_ata =
-        client.send_and_confirm_transaction(&transaction_create_recipient_ata)?;
+    Ok(signature)
+}
 
-    let recipient_address = get_associated_token_address(&recipient.pubkey(), &mint.pubkey());
-    let recipient_account = client.get_account(&recipient_address)?;
-    let recipient_data = Account::unpack(&recipient_account.data)?;
-
-    println!(
-        "\nTransaction Signature: {}",
-        transaction_signature_recipient_ata
-    );
-    println!("Recipient Address: {}", recipient_address);
-    println!("Recipient Account: {:#?}", recipient_data);
-
-    // Transfer Tokens
-    let transfer_amount = 25;
-    let transaction_transfer_amount = Transaction::new_signed_with_payer(
+fn transfer_tokens_between_ata(
+    client: &RpcClient,
+    payer: &Keypair,
+    source_ata: &Pubkey,
+    mint: &Pubkey,
+    destination_ata: &Pubkey,
+    latest_blockhash: Hash,
+    amount: u64,
+    decimals: u8,
+) -> Result<Signature> {
+    let transaction = Transaction::new_signed_with_payer(
         &[transfer_checked(
             &token_program_id(),
-            &sender_account_address,
-            &mint.pubkey(),
-            &recipient_address,
+            source_ata,
+            mint,
+            destination_ata,
             &payer.pubkey(),
             &[],
-            transfer_amount,
+            amount,
             decimals,
         )?],
         Some(&payer.pubkey()),
@@ -162,22 +217,7 @@ fn main() -> Result<()> {
         latest_blockhash,
     );
 
-    let transaction_signature_transfer_amount =
-        client.send_and_confirm_transaction(&transaction_transfer_amount)?;
+    let signature = client.send_and_confirm_transaction(&transaction)?;
 
-    let sender_token_account = client.get_account(&sender_account_address)?;
-    let sender_token_data = Account::unpack(&sender_token_account.data)?;
-
-    let recipient_account = client.get_account(&recipient_address)?;
-    let recipient_data = Account::unpack(&recipient_account.data)?;
-
-    println!("\nTransfer Tokens");
-    println!(
-        "Transaction Signature: {}",
-        transaction_signature_transfer_amount
-    );
-    print!("Sender Account: {:#?}", sender_token_data);
-    print!("Recipient Account: {:#?}", recipient_data);
-
-    Ok(())
+    Ok(signature)
 }
