@@ -42,7 +42,7 @@ fn main() -> Result<()> {
 
     let signature = client.send_and_confirm_transaction(&transaction)?;
 
-    println!("\nMint NFT\n\tAddress: {}\n\tSig: {}", asset, signature);
+    println!("\nUpdate NFT\n\tAddress: {}\n\tSig: {}", asset, signature);
 
     Ok(())
 }
